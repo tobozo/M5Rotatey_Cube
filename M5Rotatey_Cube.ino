@@ -1,5 +1,6 @@
 
-#include <M5Stack.h>
+#include <M5Stack.h> // https://github.com/tobozo/ESP32-Chimera-Core
+#include <M5StackUpdater.h> // https://github.com/tobozo/M5Stack-SD-Updater
 #include "utility/MPU9250.h"
 #include "utility/quaternionFilters.h"
 
@@ -224,6 +225,15 @@ void setup() {
 
   M5.begin();
   Wire.begin();
+  M5.ScreenShot.init( &tft, M5STACK_SD );
+  M5.ScreenShot.begin();
+  // build has buttons => enable SD Updater at boot
+  if(digitalRead(BUTTON_A_PIN) == 0) {
+    Serial.println("Will Load menu binary");
+    updateFromFS();
+    ESP.restart();
+  }
+
 
   // Read the WHO_AM_I register, this is a good test of communication
   byte c = IMU.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
@@ -288,6 +298,10 @@ void cubeloop() {
   fps(1);
   msOverlay();
   sprite.pushSprite( tft.width()/2 - spriteWidth/2, tft.height()/2 - spriteHeight/2 );
+  M5.update();
+  if( M5.BtnB.wasPressed() ) {
+    M5.ScreenShot.snap(); 
+  }
 
   lastAngleX = angleX;
   lastAngleY = angleY;
