@@ -1,8 +1,15 @@
-
-#include <M5Stack.h> // https://github.com/tobozo/ESP32-Chimera-Core
+#include <ESP32-Chimera-Core.h> // https://github.com/tobozo/ESP32-Chimera-Core
+//#include <M5Core2.h> // https://github.com/M5Stack/M5Core2
 #include <M5StackUpdater.h> // https://github.com/tobozo/M5Stack-SD-Updater
-#include "utility/MPU9250.h"
-#include "utility/quaternionFilters.h"
+
+#if !defined( ARDUINO_M5STACK_Core2 ) // M5Core2 loads MPU implicitely
+
+  #include "utility/MPU9250.h"
+  #include "utility/quaternionFilters.h"
+
+  MPU9250 IMU;
+
+#endif
 
 #define processing_out false
 #define AHRS true         // Set to false for basic data read
@@ -10,7 +17,7 @@
 
 #define tft M5.Lcd
 
-MPU9250 IMU;
+
 TFT_eSprite sprite = TFT_eSprite( &tft );
 
 
@@ -35,6 +42,7 @@ const float DEG2RAD = 180 / PI;
 // Overall scale and perspective distance
 uint8_t sZ = 4, scale = 48, scaleMax = 48;
 float sphereSize = 6.0;
+uint16_t sphereColor = TFT_YELLOW;
 // screen center coordinates (calculated from screen dimensions)
 uint16_t spriteWidth = 236;
 uint16_t spriteHeight = 236;
@@ -55,7 +63,7 @@ typedef struct {
 typedef struct {
     uint16_t id1;
     uint16_t id2;
-} Lines;  
+} Lines;
 
 
 /* https://codepen.io/ge1doot/pen/grWrLe */
@@ -87,7 +95,7 @@ static Coord3DSet CubePoints3DArray[] = {
   {  0,  -1,  -1 },
 
   //{0, 0, 0}
-  
+
 };
 
 static Coord3DSet CubePoints2DArray[] = {
@@ -109,7 +117,7 @@ static Coord3DSet CubePoints2DArray[] = {
   { 0,0 },
   { 0,0 },
   { 0,0 },
-  
+
   { 0,0 },
   { 0,0 },
   { 0,0 },
@@ -144,7 +152,7 @@ static Lines LinesArray[] = {
   { 5, 8 },
   { 7, 6 }
  */
-  
+
 };
 
 // used for sorting points by depth
@@ -156,6 +164,12 @@ uint16_t totallines = sizeof(LinesArray) / sizeof(LinesArray[0]);
 
 // Calculate angle from accel/gyro
 void calcRotation() {
+
+#if defined( ARDUINO_M5STACK_Core2 ) // M5Core2
+
+  M5.IMU.getAhrsData( &angleY, &angleX, &angleZ);
+
+#else
 
   bool imuChanged = false;
   // If intPin goes high, all data registers have new data
@@ -216,6 +230,8 @@ void calcRotation() {
   gyro_angle_y = angleY;
   gyro_angle_z = angleZ;
   //Serial.printf("[%10.4f, %10.4f]\n", acc_angle_x, acc_angle_y);
+#endif
+
 }
 
 
@@ -225,17 +241,32 @@ void setup() {
 
   M5.begin();
   Wire.begin();
-  M5.ScreenShot.init( &tft, M5STACK_SD );
-  M5.ScreenShot.begin();
+  #ifdef _CHIMERA_CORE_
+    M5.ScreenShot.init( &tft, M5STACK_SD );
+    M5.ScreenShot.begin();
+  #else
+    #define M5STACK_SD SD
+  #endif
   // build has buttons => enable SD Updater at boot
+  checkSDUpdater();
+  /*
   if(digitalRead(BUTTON_A_PIN) == 0) {
     Serial.println("Will Load menu binary");
-    updateFromFS();
+    updateFromFS( M5STACK_SD );
     ESP.restart();
+  }*/
+  // Read the WHO_AM_I register, this is a good test of communication
+
+#if defined( ARDUINO_M5STACK_Core2 ) // M5Core2
+
+  if( M5.IMU.Init() == 0 ) {
+    Serial.println("IMU Check Successful");
+  } else {
+    Serial.println("IMU Check failed");
   }
 
+#else
 
-  // Read the WHO_AM_I register, this is a good test of communication
   byte c = IMU.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
   Serial.print("MPU9250 "); Serial.print("I AM "); Serial.print(c, HEX);
   Serial.print(" I should be "); Serial.println(0x71, HEX);
@@ -254,6 +285,8 @@ void setup() {
   // Get magnetometer calibration from AK8963 ROM
   IMU.initAK8963(IMU.magCalibration);
 
+#endif
+
   // store initial position
   calcRotation(); // read from MPU
   lastAngleX = angleX;
@@ -261,11 +294,9 @@ void setup() {
   lastAngleZ = angleZ;
 
   Serial.println("Starting screen");
-  if( psramInit() ) {
-    sprite.setPsram( false );
-  }
-  sprite.setColorDepth( 16 );
-  sprite.setPsram( false );
+
+  sprite.setColorDepth( 16 ); // should fit in memory
+
   sprite.setTextSize(1);
   sprite.setTextColor(GREEN ,BLACK);
   sprite.createSprite( spriteWidth, spriteHeight );
@@ -274,14 +305,42 @@ void setup() {
 
 void loop() {
   calcRotation();
-  cubeloop(); 
+  cubeloop();
 }
 
+
+static float diffAngleX, diffAngleY, diffAngleZ;
+
+
+
+struct randBouncer {
+  uint8_t val = rand()%255;
+  uint8_t speed = rand()%255;
+  unsigned long last = millis();
+  int8_t dir = rand()%50>50 ? 1 : -1;
+  void bounce() {
+    auto now=millis();
+    if( last+speed*100 < now ) {
+      switch( dir ) {
+        case 1:
+          if( val == 255 ) dir = -1;
+        break;
+        case -1:
+          if( val == 0 ) dir = 1;
+        break;
+      }
+      val += dir;
+      last = now;
+    }
+  }
+
+};
+
+randBouncer randColors[3];
 
 
 void cubeloop() {
 
-  float diffAngleX, diffAngleY, diffAngleZ;
 
   diffAngleX = lastAngleX - angleX;
   diffAngleY = lastAngleY - angleY;
@@ -295,19 +354,34 @@ void cubeloop() {
   sprite.fillSprite( TFT_BLACK );
   //meshPlot();
   spherePlot();
+
+  for( int i=0;i<3;i++ ) {
+    randColors[i].bounce();
+  }
+  sphereColor = tft.color565( randColors[0].val, randColors[1].val, randColors[2].val );
+
+  float xrelpos = fmod( float( millis()/500.0 ), 4.0) - 2.0;
+  float yrelpos = sin(xrelpos*xrelpos);
+  sphereSize = 4.0 + yrelpos*3;
+
+
   fps(1);
   msOverlay();
   sprite.pushSprite( tft.width()/2 - spriteWidth/2, tft.height()/2 - spriteHeight/2 );
-  M5.update();
-  if( M5.BtnB.wasPressed() ) {
-    M5.ScreenShot.snap(); 
-  }
+  #ifdef _CHIMERA_CORE_
+    M5.update();
+    if( M5.BtnB.wasPressed() ) {
+      M5.ScreenShot.snap();
+    }
+  #endif
 
   lastAngleX = angleX;
   lastAngleY = angleY;
   lastAngleZ = angleZ;
 
 }
+
+
 void vectorRotateXYZ(double angle, int axe) {
   int8_t m1; // coords polarity
   uint8_t i1, i2; // coords index
@@ -383,7 +457,7 @@ void drawSphere( uint16_t x, uint16_t y, uint16_t radius, uint16_t color ) {
   sprite.fillCircle( x, y, radius, color);
   while( _radius > 0 ) {
     int gap = (radius - _radius)/2;
-    byte lumval = map( _radius, 0, radius, 255, 64 );
+    byte lumval = map( _radius, 1, radius, 255, 64 );
     uint16_t translatedColor = luminance( color, lumval );
     sprite.fillCircle( x+gap, y-gap, _radius, translatedColor);
     _radius--;
@@ -397,11 +471,11 @@ void spherePlot() {
   int transid;
   for( i=0; i<totalpoints; i++ ) {
     transid = zsortedpoints[i];
-    CubePoints2DArray[transid].x = centerX + scale/(1+CubePoints3DArray[transid].z/sZ)*CubePoints3DArray[transid].x; 
+    CubePoints2DArray[transid].x = centerX + scale/(1+CubePoints3DArray[transid].z/sZ)*CubePoints3DArray[transid].x;
     CubePoints2DArray[transid].y = centerY + scale/(1+CubePoints3DArray[transid].z/sZ)*CubePoints3DArray[transid].y;
     radius = (-CubePoints3DArray[transid].z+3)* sphereSize;
-    byte depthlumval = map( int(CubePoints3DArray[transid].z)*128, -128, 128, 255, 64 );
-    uint16_t depthColor = luminance( TFT_YELLOW, depthlumval );
+    byte depthlumval = map( int(CubePoints3DArray[transid].z)*255, -255, 255, 255, 192 );
+    uint16_t depthColor = luminance( sphereColor, depthlumval );
     drawSphere( CubePoints2DArray[transid].x, CubePoints2DArray[transid].y, radius, depthColor );
   }
 }
@@ -425,7 +499,7 @@ static inline void fps(const int seconds){
   static unsigned long lastMillis;
   static unsigned long frameCount;
   static unsigned int framesPerSecond;
-  
+
   // It is best if we declare millis() only once
   unsigned long now = millis();
   frameCount ++;
@@ -444,12 +518,21 @@ void msOverlay() {
   sprite.setTextColor( WHITE );
   sprite.drawString( String( String(fpsall)+"fps" ), 0, 0 );
   sprite.setTextColor(GREEN, GREEN);
-  sprite.setCursor(10, 0); 
+  sprite.setCursor(10, 0);
   sprite.print("     x      y      z ");
   sprite.setCursor(10,  12);
+#if defined( ARDUINO_M5STACK_Core2 ) // M5Core2
+  float ax=0, ay=0, az=0, gx=0, gy=0, gz=0;
+  M5.IMU.getAccelData( &ax, &ay, &az );
+  M5.IMU.getGyroData( &gx, &gy, &gz );
+  sprite.printf("% 6d % 6d % 6d mg   \r\n",  (int)(1000*ax), (int)(1000*ay), (int)(1000*az));
+  sprite.setCursor(10,  24);
+  sprite.printf("% 6d % 6d % 6d o/s  \r\n", (int)(gx), (int)(gy), (int)(gz));
+#else
   sprite.printf("% 6d % 6d % 6d mg   \r\n",  (int)(1000*IMU.ax), (int)(1000*IMU.ay), (int)(1000*IMU.az));
   sprite.setCursor(10,  24);
   sprite.printf("% 6d % 6d % 6d o/s  \r\n", (int)(IMU.gx), (int)(IMU.gy), (int)(IMU.gz));
+#endif
 }
 
 
